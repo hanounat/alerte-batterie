@@ -1,0 +1,496 @@
+# Fabrique l'APK de l'application Alerte Batterie.
+# Mode d'emploi : onglet "Actions" du dépôt > "Construire l'APK" > "Run workflow".
+name: Construire l'APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+
+      - name: Écrire les fichiers de l'application
+        run: |
+          mkdir -p app/src/main/java/com/alertebatterie
+          cat > settings.gradle <<'FIN_FICHIER_0'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "AlerteBatterie"
+          include ':app'
+          FIN_FICHIER_0
+          cat > build.gradle <<'FIN_FICHIER_1'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          FIN_FICHIER_1
+          cat > gradle.properties <<'FIN_FICHIER_2'
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          android.useAndroidX=false
+          FIN_FICHIER_2
+          cat > app/build.gradle <<'FIN_FICHIER_3'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.alertebatterie'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.alertebatterie"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          FIN_FICHIER_3
+          cat > app/src/main/AndroidManifest.xml <<'FIN_FICHIER_4'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.VIBRATE" />
+
+              <application
+                  android:allowBackup="false"
+                  android:label="Alerte Batterie">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".BatteryService"
+                      android:exported="false"
+                      android:foregroundServiceType="specialUse">
+                      <property
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                          android:value="Surveiller la charge de la batterie et sonner quand elle est pleine" />
+                  </service>
+
+              </application>
+          </manifest>
+          FIN_FICHIER_4
+          cat > app/src/main/java/com/alertebatterie/MainActivity.java <<'FIN_FICHIER_5'
+          package com.alertebatterie;
+
+          import android.Manifest;
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.content.pm.PackageManager;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.text.InputType;
+          import android.view.View;
+          import android.widget.Button;
+          import android.widget.EditText;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
+
+          public class MainActivity extends Activity {
+
+              private TextView etat;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  final SharedPreferences prefs = getSharedPreferences(BatteryService.PREFS, MODE_PRIVATE);
+
+                  LinearLayout page = new LinearLayout(this);
+                  page.setOrientation(LinearLayout.VERTICAL);
+                  int marge = (int) (24 * getResources().getDisplayMetrics().density);
+                  page.setPadding(marge, marge, marge, marge);
+
+                  TextView titre = new TextView(this);
+                  titre.setText("Alerte Batterie");
+                  titre.setTextSize(26);
+                  page.addView(titre);
+
+                  TextView aide = new TextView(this);
+                  aide.setText("\nBranchez le chargeur, puis appuyez sur Démarrer. "
+                          + "Le téléphone sonnera quand la batterie atteindra le niveau choisi. "
+                          + "Il s'arrête de sonner quand vous débranchez le chargeur.\n");
+                  aide.setTextSize(16);
+                  page.addView(aide);
+
+                  TextView libelle = new TextView(this);
+                  libelle.setText("Niveau d'alerte (en %) :");
+                  libelle.setTextSize(16);
+                  page.addView(libelle);
+
+                  final EditText niveau = new EditText(this);
+                  niveau.setInputType(InputType.TYPE_CLASS_NUMBER);
+                  niveau.setText(String.valueOf(prefs.getInt(BatteryService.CLE_LIMITE, 100)));
+                  page.addView(niveau);
+
+                  Button demarrer = new Button(this);
+                  demarrer.setText("Démarrer la surveillance");
+                  page.addView(demarrer);
+
+                  Button arreter = new Button(this);
+                  arreter.setText("Arrêter la surveillance");
+                  page.addView(arreter);
+
+                  etat = new TextView(this);
+                  etat.setTextSize(16);
+                  etat.setPadding(0, marge, 0, 0);
+                  page.addView(etat);
+
+                  demarrer.setOnClickListener(new View.OnClickListener() {
+                      @Override
+                      public void onClick(View v) {
+                          int limite = 100;
+                          try {
+                              limite = Integer.parseInt(niveau.getText().toString().trim());
+                          } catch (Exception e) {
+                              limite = 100;
+                          }
+                          if (limite < 1) limite = 1;
+                          if (limite > 100) limite = 100;
+                          niveau.setText(String.valueOf(limite));
+                          prefs.edit().putInt(BatteryService.CLE_LIMITE, limite).apply();
+
+                          Intent i = new Intent(MainActivity.this, BatteryService.class);
+                          i.setAction(BatteryService.ACTION_START);
+                          if (Build.VERSION.SDK_INT >= 26) {
+                              startForegroundService(i);
+                          } else {
+                              startService(i);
+                          }
+                          etat.setText("Surveillance active : l'alarme sonnera à " + limite + " %.");
+                      }
+                  });
+
+                  arreter.setOnClickListener(new View.OnClickListener() {
+                      @Override
+                      public void onClick(View v) {
+                          stopService(new Intent(MainActivity.this, BatteryService.class));
+                          etat.setText("Surveillance arrêtée.");
+                      }
+                  });
+
+                  setContentView(page);
+
+                  if (Build.VERSION.SDK_INT >= 33
+                          && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                          != PackageManager.PERMISSION_GRANTED) {
+                      requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1);
+                  }
+              }
+          }
+          FIN_FICHIER_5
+          cat > app/src/main/java/com/alertebatterie/BatteryService.java <<'FIN_FICHIER_6'
+          package com.alertebatterie;
+
+          import android.app.Notification;
+          import android.app.NotificationChannel;
+          import android.app.NotificationManager;
+          import android.app.PendingIntent;
+          import android.app.Service;
+          import android.content.BroadcastReceiver;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.IntentFilter;
+          import android.content.pm.ServiceInfo;
+          import android.media.AudioAttributes;
+          import android.media.AudioManager;
+          import android.media.MediaPlayer;
+          import android.media.RingtoneManager;
+          import android.net.Uri;
+          import android.os.BatteryManager;
+          import android.os.Build;
+          import android.os.IBinder;
+          import android.os.VibrationEffect;
+          import android.os.Vibrator;
+
+          public class BatteryService extends Service {
+
+              static final String ACTION_START = "com.alertebatterie.START";
+              static final String ACTION_STOP_ALARM = "com.alertebatterie.STOP_ALARM";
+              static final String ACTION_STOP_ALL = "com.alertebatterie.STOP_ALL";
+              static final String PREFS = "reglages";
+              static final String CLE_LIMITE = "limite";
+
+              private static final String CANAL_SURVEILLANCE = "surveillance";
+              private static final String CANAL_ALERTE = "alerte";
+              private static final int ID_SURVEILLANCE = 1;
+              private static final int ID_ALERTE = 2;
+
+              private MediaPlayer lecteur;
+              private Vibrator vibreur;
+              private boolean sonne = false;
+              private boolean dejaSonne = false;
+              private boolean recepteurActif = false;
+
+              private final BroadcastReceiver recepteur = new BroadcastReceiver() {
+                  @Override
+                  public void onReceive(Context context, Intent intent) {
+                      analyser(intent);
+                  }
+              };
+
+              @Override
+              public IBinder onBind(Intent intent) {
+                  return null;
+              }
+
+              @Override
+              public int onStartCommand(Intent intent, int flags, int startId) {
+                  String action = intent != null ? intent.getAction() : null;
+                  creerCanaux();
+                  demarrerPremierPlan();
+
+                  if (ACTION_STOP_ALL.equals(action)) {
+                      arreterTout();
+                      return START_NOT_STICKY;
+                  }
+                  if (ACTION_STOP_ALARM.equals(action)) {
+                      arreterAlarme();
+                  }
+                  if (!recepteurActif) {
+                      IntentFilter filtre = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+                      Intent etat;
+                      if (Build.VERSION.SDK_INT >= 33) {
+                          etat = registerReceiver(recepteur, filtre, Context.RECEIVER_NOT_EXPORTED);
+                      } else {
+                          etat = registerReceiver(recepteur, filtre);
+                      }
+                      recepteurActif = true;
+                      if (etat != null) {
+                          analyser(etat);
+                      }
+                  }
+                  return START_STICKY;
+              }
+
+              private void analyser(Intent i) {
+                  int niveau = i.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+                  int echelle = i.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
+                  int statut = i.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+                  int branche = i.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0);
+                  int pourcent = (niveau >= 0 && echelle > 0) ? (niveau * 100 / echelle) : -1;
+                  int limite = getSharedPreferences(PREFS, MODE_PRIVATE).getInt(CLE_LIMITE, 100);
+
+                  if (branche == 0) {
+                      arreterAlarme();
+                      dejaSonne = false;
+                      return;
+                  }
+                  boolean pleine = pourcent >= limite || statut == BatteryManager.BATTERY_STATUS_FULL;
+                  if (pleine && !sonne && !dejaSonne) {
+                      demarrerAlarme(pourcent);
+                  }
+              }
+
+              private void demarrerAlarme(int pourcent) {
+                  sonne = true;
+                  dejaSonne = true;
+
+                  try {
+                      AudioManager audio = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                      audio.setStreamVolume(AudioManager.STREAM_ALARM,
+                              audio.getStreamMaxVolume(AudioManager.STREAM_ALARM), 0);
+                  } catch (Exception e) {
+                      // on continue même si le volume ne peut pas être réglé
+                  }
+
+                  try {
+                      Uri son = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+                      if (son == null) {
+                          son = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+                      }
+                      lecteur = new MediaPlayer();
+                      lecteur.setDataSource(this, son);
+                      lecteur.setAudioAttributes(new AudioAttributes.Builder()
+                              .setUsage(AudioAttributes.USAGE_ALARM)
+                              .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                              .build());
+                      lecteur.setLooping(true);
+                      lecteur.prepare();
+                      lecteur.start();
+                  } catch (Exception e) {
+                      if (lecteur != null) {
+                          try {
+                              lecteur.release();
+                          } catch (Exception e2) {
+                              // rien
+                          }
+                          lecteur = null;
+                      }
+                  }
+
+                  try {
+                      vibreur = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+                      long[] motif = {0, 800, 600};
+                      if (Build.VERSION.SDK_INT >= 26) {
+                          vibreur.vibrate(VibrationEffect.createWaveform(motif, 0));
+                      } else {
+                          vibreur.vibrate(motif, 0);
+                      }
+                  } catch (Exception e) {
+                      // rien
+                  }
+
+                  PendingIntent arreter = action(ACTION_STOP_ALARM, 2);
+                  Notification.Builder b = (Build.VERSION.SDK_INT >= 26)
+                          ? new Notification.Builder(this, CANAL_ALERTE)
+                          : new Notification.Builder(this);
+                  b.setSmallIcon(android.R.drawable.ic_dialog_info)
+                          .setContentTitle("Batterie chargée (" + pourcent + " %)")
+                          .setContentText("Débranchez le chargeur ou appuyez ici pour arrêter la sonnerie.")
+                          .setContentIntent(arreter)
+                          .addAction(android.R.drawable.ic_media_pause, "Arrêter la sonnerie", arreter)
+                          .setAutoCancel(true);
+                  if (Build.VERSION.SDK_INT < 26) {
+                      b.setPriority(Notification.PRIORITY_HIGH);
+                  }
+                  NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                  nm.notify(ID_ALERTE, b.build());
+              }
+
+              private void arreterAlarme() {
+                  sonne = false;
+                  if (lecteur != null) {
+                      try {
+                          lecteur.stop();
+                      } catch (Exception e) {
+                          // rien
+                      }
+                      try {
+                          lecteur.release();
+                      } catch (Exception e) {
+                          // rien
+                      }
+                      lecteur = null;
+                  }
+                  if (vibreur != null) {
+                      try {
+                          vibreur.cancel();
+                      } catch (Exception e) {
+                          // rien
+                      }
+                  }
+                  NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                  nm.cancel(ID_ALERTE);
+              }
+
+              private void arreterTout() {
+                  arreterAlarme();
+                  if (recepteurActif) {
+                      try {
+                          unregisterReceiver(recepteur);
+                      } catch (Exception e) {
+                          // rien
+                      }
+                      recepteurActif = false;
+                  }
+                  stopForeground(true);
+                  stopSelf();
+              }
+
+              private void demarrerPremierPlan() {
+                  int limite = getSharedPreferences(PREFS, MODE_PRIVATE).getInt(CLE_LIMITE, 100);
+                  Notification.Builder b = (Build.VERSION.SDK_INT >= 26)
+                          ? new Notification.Builder(this, CANAL_SURVEILLANCE)
+                          : new Notification.Builder(this);
+                  b.setSmallIcon(android.R.drawable.ic_dialog_info)
+                          .setContentTitle("Surveillance de la batterie active")
+                          .setContentText("L'alarme sonnera à " + limite + " %")
+                          .setOngoing(true)
+                          .addAction(android.R.drawable.ic_menu_close_clear_cancel,
+                                  "Arrêter la surveillance", action(ACTION_STOP_ALL, 1));
+                  Notification n = b.build();
+                  if (Build.VERSION.SDK_INT >= 34) {
+                      startForeground(ID_SURVEILLANCE, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+                  } else {
+                      startForeground(ID_SURVEILLANCE, n);
+                  }
+              }
+
+              private void creerCanaux() {
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                      NotificationChannel surveillance = new NotificationChannel(
+                              CANAL_SURVEILLANCE, "Surveillance", NotificationManager.IMPORTANCE_LOW);
+                      nm.createNotificationChannel(surveillance);
+                      NotificationChannel alerte = new NotificationChannel(
+                              CANAL_ALERTE, "Batterie chargée", NotificationManager.IMPORTANCE_HIGH);
+                      alerte.setSound(null, null);
+                      nm.createNotificationChannel(alerte);
+                  }
+              }
+
+              private PendingIntent action(String action, int code) {
+                  Intent i = new Intent(this, BatteryService.class);
+                  i.setAction(action);
+                  return PendingIntent.getService(this, code, i,
+                          PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+              }
+
+              @Override
+              public void onDestroy() {
+                  arreterAlarme();
+                  if (recepteurActif) {
+                      try {
+                          unregisterReceiver(recepteur);
+                      } catch (Exception e) {
+                          // rien
+                      }
+                      recepteurActif = false;
+                  }
+                  super.onDestroy();
+              }
+          }
+          FIN_FICHIER_6
+
+      - name: Installer Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Installer Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Fabriquer l'APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Mettre l'APK à disposition
+        uses: actions/upload-artifact@v4
+        with:
+          name: AlerteBatterie-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
